@@ -8,7 +8,7 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 def index():
     return render_template("dashboard.html", modelname="modelName", model_id="model_id")
 
-@app.route("/get-dashboard-data", methods=["GET"])
+@app.route("/get-dashboard-data", methods=["GET", "POST"])
 def get_data():
     data_path = Path(app.static_folder) / "data" / "dashboardData.json"
     try:
