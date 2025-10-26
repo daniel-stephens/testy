@@ -13,7 +13,7 @@ COPY app/ /app/
 RUN pip install -r requirements.txt
 
 # Flask served by Gunicorn on 8000; templates/static/data are under /app
-EXPOSE 9090
+EXPOSE 5000
 # replace your current CMD with:
-CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:9090", "app:app"]
+CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:5000", "app:app"]
 
