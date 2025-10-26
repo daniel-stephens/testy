@@ -12,7 +12,7 @@ def index():
 
 @app.route("/get-dashboard-data", methods=["GET", "POST"])
 def get_data():
-    data_path = Path("./data/dashboardData.json")
+    data_path = Path("./static/data/dashboardData.json")
     # Read the JSON file from disk and return it
     with data_path.open("r", encoding="utf-8") as f:
         payload = json.load(f)
