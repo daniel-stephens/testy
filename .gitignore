@@ -1,0 +1,57 @@
+# Terraform
+.terraform/
+terraform.tfstate
+terraform.tfstate.*
+*.tfstate.backup
+*.tfplan
+crash.log
+crash.*.log
+
+# Keep lock file tracked
+!/.terraform.lock.hcl
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+*.log
+
+# Node (if present)
+node_modules/
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# Builds / artifacts
+dist/
+build/
+*.egg-info/
+
+# Secrets / keys / env
+.env
+.env.*
+*.pem
+
+# Docker (optional)
+Dockerfile*
+docker-compose*.yml
+# Terraform
+.terraform/
+terraform.tfstate
+terraform.tfstate.*
+*.tfstate.backup
+*.tfplan
+crash.log
+crash.*.log
+
+# Keep the lock file tracked:
+!/.terraform.lock.hcl
