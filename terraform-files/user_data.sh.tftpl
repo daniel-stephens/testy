@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+exec > >(tee -a /var/log/user-data.log) 2>&1
+set -euxo pipefail
+umask 027
+
+# ---------- Terraform → Bash vars ----------
+APP_USER="ubuntu"
+REPO_URL="${repo_url}"
+REPO_BRANCH="${repo_branch}"
+APP_WORKDIR="${app_workdir}"      # e.g. /home/ubuntu/tova
+APP_MODULE="${app_module}"        # e.g. app:app
+SERVICE_NAME="${service_name}"    # e.g. tova
+
+# ---------- System packages ----------
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y --no-install-recommends python3-venv python3-pip git nginx ca-certificates
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+
+# ---------- Prepare app dir ----------
+mkdir -p "$APP_WORKDIR"
+chown -R "$APP_USER":www-data "$APP_WORKDIR"
+find "$APP_WORKDIR" -type d -exec chmod 755 {} \; || true
+find "$APP_WORKDIR" -type f -exec chmod 644 {} \; || true
+
+# ---------- Clone / update repo + venv ----------
+sudo -u "$APP_USER" env APP_WORKDIR="$APP_WORKDIR" REPO_URL="$REPO_URL" REPO_BRANCH="$REPO_BRANCH" bash -lc '
+  set -eux
+  tries=0
+  until [ $tries -ge 4 ]; do
+    if [ ! -d "$APP_WORKDIR/.git" ]; then
+      git clone --branch "$REPO_BRANCH" --depth 1 "$REPO_URL" "$APP_WORKDIR" && break
+    else
+      cd "$APP_WORKDIR"
+      git fetch --depth 1 origin "$REPO_BRANCH" || true
+      git checkout "$REPO_BRANCH" || true
+      git reset --hard "origin/$REPO_BRANCH" && break
+    fi
+    tries=$((tries+1))
+    sleep $((2**tries))
+  done
+
+  python3 -m venv "$APP_WORKDIR/venv"
+  "$APP_WORKDIR/venv/bin/python" -m pip install --upgrade pip wheel setuptools --no-cache-dir
+
+  
+  if [ -f "$APP_WORKDIR/requirements.txt" ]; then
+    "$APP_WORKDIR/venv/bin/python" -m pip install -r "$APP_WORKDIR/requirements.txt" --no-cache-dir
+  else
+    "$APP_WORKDIR/venv/bin/python" -m pip install gunicorn flask --no-cache-dir
+  fi
+'
+
+# ---------- systemd: Gunicorn ----------
+tee /etc/systemd/system/$SERVICE_NAME.service >/dev/null <<'UNITEOF'
+[Unit]
+Description=__SERVICE_NAME__ Flask app (Gunicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=www-data
+WorkingDirectory=__APP_WORKDIR__/app
+ExecStart=__APP_WORKDIR__/venv/bin/python -m gunicorn \
+          --workers 3 \
+          --bind 127.0.0.1:5000 \
+          "__APP_MODULE__"
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65535
+ExecReload=/bin/kill -HUP $${MAINPID}
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+
+sed -i "s#__SERVICE_NAME__#$SERVICE_NAME#g" /etc/systemd/system/$SERVICE_NAME.service
+sed -i "s#__APP_USER__#$APP_USER#g"         /etc/systemd/system/$SERVICE_NAME.service
+sed -i "s#__APP_WORKDIR__#$APP_WORKDIR#g"   /etc/systemd/system/$SERVICE_NAME.service
+sed -i "s#__APP_MODULE__#$APP_MODULE#g"     /etc/systemd/system/$SERVICE_NAME.service
+
+systemctl daemon-reload
+systemctl enable "$SERVICE_NAME".service
+systemctl restart "$SERVICE_NAME".service
+systemctl status "$SERVICE_NAME".service --no-pager || true
+journalctl -u "$SERVICE_NAME".service -n 50 --no-pager || true
+
+# ---------- Nginx site ----------
+tee /etc/nginx/sites-available/$SERVICE_NAME.conf >/dev/null <<'NGINXEOF'
+upstream app_upstream { server 127.0.0.1:5000; keepalive 16; }
+
+server {
+    listen 80 default_server;
+    server_name _;
+
+    location / {
+        proxy_pass http://app_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+        proxy_redirect off;
+    }
+
+    location /static/ {
+        alias __APP_WORKDIR__/app/static/;
+        access_log off;
+        expires 30d;
+        limit_except GET HEAD { deny all; }
+    }
+}
+NGINXEOF
+
+sed -i "s#__APP_WORKDIR__#$APP_WORKDIR#g" /etc/nginx/sites-available/$SERVICE_NAME.conf
+rm -f /etc/nginx/sites-enabled/default || true
+ln -sf /etc/nginx/sites-available/$SERVICE_NAME.conf /etc/nginx/sites-enabled/$SERVICE_NAME.conf
+nginx -t
+systemctl reload nginx
+
+# ---------- Done ----------
+chown -R "$APP_USER":www-data "$APP_WORKDIR" || true
+echo "Bootstrap complete: $SERVICE_NAME behind Nginx." | tee -a /var/log/user-data.log

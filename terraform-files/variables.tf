@@ -1,46 +1,70 @@
-variable "project_name" {
-  description = "Base name for ECS/ALB resources"
-  type        = string
-  default     = "Tova"
-}
-
-variable "region" {
-  description = "AWS region"
+variable "aws_region" {
+  description = "AWS region to deploy into"
   type        = string
   default     = "us-east-1"
 }
 
-variable "image_url" {
-  description = "Full ECR image URL with tag (e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/flask-ecs:latest)"
+variable "project" {
+  description = "Name prefix for resources"
+  type        = string
+  default     = "tova"
+}
+
+variable "vpc_cidr" {
+  description = "CIDR for the VPC"
+  type        = string
+  default     = "10.0.0.0/16"
+}
+
+variable "public_subnet_cidr" {
+  description = "CIDR for the public subnet"
+  type        = string
+  default     = "10.0.1.0/24"
+}
+
+variable "key_name" {
+  description = "Existing EC2 key pair name to SSH into the instance"
   type        = string
 }
 
-variable "container_port" {
-  description = "Container port your Gunicorn listens on"
-  type        = number
-  default     = 9090
-}
-
-variable "desired_count" {
-  description = "Number of tasks to run"
-  type        = number
-  default     = 1
-}
-
-variable "cpu" {
-  description = "Task CPU units (256=0.25 vCPU)"
-  type        = number
-  default     = 256
-}
-
-variable "memory" {
-  description = "Task memory MiB"
-  type        = number
-  default     = 512
-}
-
-variable "alb_ingress_cidr" {
-  description = "CIDR allowed to reach ALB (0.0.0.0/0 = public)"
+variable "ssh_cidr" {
+  description = "CIDR allowed to SSH to the instance (lock to your IP!)"
   type        = string
   default     = "0.0.0.0/0"
 }
+
+variable "instance_type" {
+  description = "EC2 instance type"
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "repo_url" {
+  type    = string
+  default = "https://github.com/daniel-stephens/testy.git"
+}
+
+variable "repo_branch" {
+  type    = string
+  default = "main"
+}
+
+variable "app_workdir" {
+  type    = string
+  default = "/home/ubuntu/tova/"
+}
+
+variable "app_module" {
+  type    = string
+  default = "app:app"
+} # file:object
+
+variable "service_name" {
+  type    = string
+  default = "tova"
+}
+
+variable "domain_name" {
+  type    = string
+  default = ""
+} # empty = serve by IP

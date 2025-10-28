@@ -1,232 +1,113 @@
-terraform {
-  required_version = ">= 1.5.0"
-  required_providers {
-    aws    = { source = "hashicorp/aws",    version = ">= 5.0" }
-    random = { source = "hashicorp/random", version = ">= 3.0" }
+# ---------------------
+# Networking
+# ---------------------
+resource "aws_vpc" "main" {
+  cidr_block           = var.vpc_cidr
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+  tags                 = { Name = "${var.project}-vpc" }
+}
+
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.main.id
+  tags   = { Name = "${var.project}-igw" }
+}
+
+resource "aws_subnet" "public" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = var.public_subnet_cidr
+  map_public_ip_on_launch = true
+  tags                    = { Name = "${var.project}-public-subnet" }
+}
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.igw.id
   }
+  tags = { Name = "${var.project}-public-rt" }
 }
 
-provider "aws" {
-  region = var.region
+resource "aws_route_table_association" "public_assoc" {
+  subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
 }
 
-############################
-# Networking (default VPC) #
-############################
-data "aws_vpc" "default" {
-  default = true
-}
-
-data "aws_subnets" "default" {
-  filter {
-    name   = "tovaSubnet"
-    values = [data.aws_vpc.default.id]
-  }
-}
-
-##########################
-# CloudWatch log group   #
-##########################
-resource "aws_cloudwatch_log_group" "app" {
-  name              = "/ecs/${var.project_name}"
-  retention_in_days = 14
-}
-
-##########################
-# Security Groups        #
-##########################
-# ALB security group (HTTP in from the world or your CIDR)
-resource "aws_security_group" "alb" {
-  name        = "${var.project_name}-alb-sg"
-  description = "ALB ingress"
-  vpc_id      = data.aws_vpc.default.id
+# ---------------------
+# Security Group
+# ---------------------
+resource "aws_security_group" "web_sg" {
+  name        = "${var.project}-web-sg"
+  description = "Allow HTTP and SSH"
+  vpc_id      = aws_vpc.main.id
 
   ingress {
+    description = "HTTP"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = [var.alb_ingress_cidr]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-}
-
-# Tasks security group (only ALB can hit the container port)
-resource "aws_security_group" "tasks" {
-  name        = "${var.project_name}-tasks-sg"
-  description = "ECS tasks ingress from ALB"
-  vpc_id      = data.aws_vpc.default.id
 
   ingress {
-    description     = "From ALB"
-    from_port       = var.container_port
-    to_port         = var.container_port
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.ssh_cidr]
   }
 
   egress {
+    description = "All egress"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  tags = { Name = "${var.project}-web-sg" }
 }
 
-##########################
-# Load Balancer          #
-##########################
-resource "aws_lb" "this" {
-  name               = "${var.project_name}-alb"
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.alb.id]
-  subnets            = data.aws_subnets.default.ids
-}
+# ---------------------
+# AMI (Ubuntu 22.04 LTS)
+# ---------------------
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"] # Canonical
 
-resource "aws_lb_target_group" "this" {
-  name        = "${var.project_name}-tg"
-  port        = var.container_port
-  protocol    = "HTTP"
-  vpc_id      = data.aws_vpc.default.id
-  target_type = "ip"
-
-  # If you add /health to the app, set path = "/health"
-  health_check {
-    path                = "/"
-    matcher             = "200-399"
-    interval            = 30
-    timeout             = 5
-    healthy_threshold   = 2
-    unhealthy_threshold = 3
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
   }
 }
 
-resource "aws_lb_listener" "http" {
-  load_balancer_arn = aws_lb.this.arn
-  port              = 80
-  protocol          = "HTTP"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.this.arn
-  }
-}
-
-##########################
-# ECS Cluster & Roles    #
-##########################
-resource "aws_ecs_cluster" "this" {
-  name = "${var.project_name}-cluster"
-}
-
-# Execution role (pull from ECR, send logs)
-data "aws_iam_policy_document" "ecs_task_assume" {
-  statement {
-    actions = ["sts:AssumeRole"]
-    principals {
-      type        = "Service"
-      identifiers = ["ecs-tasks.amazonaws.com"]
-    }
-  }
-}
-
-resource "aws_iam_role" "execution" {
-  name               = "${var.project_name}-exec"
-  assume_role_policy = data.aws_iam_policy_document.ecs_task_assume.json
-}
-
-resource "aws_iam_role_policy_attachment" "exec_attach" {
-  role       = aws_iam_role.execution.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
-}
-
-# Task role (placeholder; attach S3/SSM perms later if needed)
-resource "aws_iam_role" "task" {
-  name               = "${var.project_name}-task"
-  assume_role_policy = data.aws_iam_policy_document.ecs_task_assume.json
-}
-
-##########################
-# Task Definition        #
-##########################
+# ---------------------
+# EC2 Instance
+# ---------------------
+# Swap this for a full script that sets up your Flask/Gunicorn+Nginx if you want.
 locals {
-  container_name = "${var.project_name}-container"
+  site_name = var.domain_name != "" ? var.domain_name : "_"
+
+  user_data = templatefile("${path.module}/user_data.sh.tftpl", {
+    repo_url     = var.repo_url
+    repo_branch  = var.repo_branch
+    app_workdir  = var.app_workdir
+    app_module   = var.app_module
+    service_name = var.service_name
+    site_name    = local.site_name
+  })
 }
 
-resource "aws_ecs_task_definition" "this" {
-  family                   = "${var.project_name}-task"
-  requires_compatibilities = ["FARGATE"]
-  network_mode             = "awsvpc"
-  cpu                      = var.cpu
-  memory                   = var.memory
-  execution_role_arn       = aws_iam_role.execution.arn
-  task_role_arn            = aws_iam_role.task.arn
 
-  container_definitions = jsonencode([
-    {
-      name      = local.container_name
-      image     = var.image_url
-      essential = true
-      portMappings = [{
-        containerPort = var.container_port
-        hostPort      = var.container_port
-        protocol      = "tcp"
-      }]
-      logConfiguration = {
-        logDriver = "awslogs",
-        options = {
-          awslogs-group         = aws_cloudwatch_log_group.app.name,
-          awslogs-region        = var.region,
-          awslogs-stream-prefix = "ecs"
-        }
-      }
-      # Your Dockerfile already has:
-      # CMD ["gunicorn","-w","2","-b","0.0.0.0:9090","app:app"]
-      # so no need to override "command" here.
-    }
-  ])
-}
-
-##########################
-# Service                #
-##########################
-resource "aws_ecs_service" "this" {
-  name            = "${var.project_name}-svc"
-  cluster         = aws_ecs_cluster.this.id
-  task_definition = aws_ecs_task_definition.this.arn
-  desired_count   = var.desired_count
-  launch_type     = "FARGATE"
-  platform_version = "LATEST"
-
-  network_configuration {
-    subnets         = data.aws_subnets.default.ids
-    security_groups = [aws_security_group.tasks.id]
-    assign_public_ip = true
-  }
-
-  load_balancer {
-    target_group_arn = aws_lb_target_group.this.arn
-    container_name   = local.container_name
-    container_port   = var.container_port
-  }
-
-  depends_on = [aws_lb_listener.http]
-}
-
-##########################
-# Handy Outputs          #
-##########################
-output "alb_dns" {
-  description = "Open http://<this> to reach your app"
-  value       = aws_lb.this.dns_name
-}
-
-output "log_group" {
-  description = "CloudWatch Logs group"
-  value       = aws_cloudwatch_log_group.app.name
+resource "aws_instance" "web" {
+  ami                         = data.aws_ami.ubuntu.id
+  instance_type               = var.instance_type
+  subnet_id                   = aws_subnet.public.id
+  vpc_security_group_ids      = [aws_security_group.web_sg.id]
+  key_name                    = var.key_name
+  associate_public_ip_address = true
+  user_data                   = local.user_data
+  user_data_replace_on_change = true
+  tags                        = { Name = "${var.project}-ec2" }
 }
